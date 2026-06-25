@@ -2,12 +2,13 @@ import { useState, useEffect, useCallback } from 'react';
 import { 
   Camera, Download, FileText, AlertCircle, CheckCircle2 
 } from 'lucide-react';
-import { ImageMetadata, FilterParams } from './types';
+import { ImageMetadata, FilterParams, StegoAnalysisResponse } from './types';
 import { UploadZone } from './components/UploadZone';
 import { SearchFilters } from './components/SearchFilters';
 import { ImageGrid } from './components/ImageGrid';
 import { MetadataPanel } from './components/MetadataPanel';
 import { MapView } from './components/MapView';
+import { StegoPanel } from './components/StegoPanel';
 
 const initialFilters: FilterParams = {
   q: '',
@@ -23,6 +24,18 @@ function App() {
   const [cameraModels, setCameraModels] = useState<string[]>([]);
   const [filters, setFilters] = useState<FilterParams>(initialFilters);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [isStegoView, setIsStegoView] = useState<boolean>(false);
+  const [stegoAnalysis, setStegoAnalysis] = useState<StegoAnalysisResponse | null>(null);
+
+  useEffect(() => {
+    setIsStegoView(false);
+    setStegoAnalysis(null);
+  }, [selectedImage]);
+
+  const handleOpenStego = (analysis: StegoAnalysisResponse) => {
+    setStegoAnalysis(analysis);
+    setIsStegoView(true);
+  };
 
   const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
@@ -178,10 +191,19 @@ function App() {
           {/* Selected Details Section */}
           {selectedImage && (
             <div className="detail-panel-grid">
-              <MetadataPanel 
-                image={selectedImage} 
-                onClose={() => setSelectedImage(null)} 
-              />
+              {isStegoView ? (
+                <StegoPanel 
+                  image={selectedImage} 
+                  analysis={stegoAnalysis} 
+                  onClose={() => setIsStegoView(false)} 
+                />
+              ) : (
+                <MetadataPanel 
+                  image={selectedImage} 
+                  onClose={() => setSelectedImage(null)} 
+                  onOpenStego={handleOpenStego}
+                />
+              )}
               <MapView 
                 images={images} 
                 selectedImage={selectedImage} 

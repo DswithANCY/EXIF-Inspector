@@ -12,8 +12,9 @@ from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db, SQLALCHEMY_DATABASE_URL, SessionLocal
 from .models import ImageMetadata
-from .schemas import ImageMetadataResponse
+from .schemas import ImageMetadataResponse, StegoDecodeRequest
 from .exif_utils import extract_exif
+from .stego_utils import scan_trailing_data, analyze_entropy, decode_lsb
 
 # Create SQLite parent directories if needed
 if SQLALCHEMY_DATABASE_URL.startswith("sqlite:///"):
@@ -308,3 +309,118 @@ def export_metadata_csv(
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=exif_metadata_export.csv"}
     )
+
+@app.get("/api/images/{image_id}/stego/analyze")
+def analyze_image_steganography(image_id: int, db: Session = Depends(get_db)):
+    image = db.query(ImageMetadata).filter(ImageMetadata.id == image_id).first()
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+        
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    local_path = os.path.join(base_dir, image.filepath.lstrip("/"))
+    
+    if not os.path.exists(local_path):
+        raise HTTPException(status_code=404, detail="Image file not found on disk")
+        
+    trailing_result = scan_trailing_data(local_path)
+    entropy_result = analyze_entropy(local_path)
+    
+    has_stego_detected = trailing_result["has_trailing_data"]
+    has_stego_suspected = entropy_result["suspected"]
+    
+    status_str = "clean"
+    if has_stego_detected:
+        status_str = "detected"
+    elif has_stego_suspected:
+        status_str = "suspected"
+        
+    return {
+        "image_id": image_id,
+        "status": status_str,
+        "trailing_data": trailing_result,
+        "entropy": entropy_result
+    }
+
+@app.post("/api/images/{image_id}/stego/decode")
+def decode_image_steganography(image_id: int, request: StegoDecodeRequest, db: Session = Depends(get_db)):
+    image = db.query(ImageMetadata).filter(ImageMetadata.id == image_id).first()
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+        
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    local_path = os.path.join(base_dir, image.filepath.lstrip("/"))
+    
+    if not os.path.exists(local_path):
+        raise HTTPException(status_code=404, detail="Image file not found on disk")
+        
+    if request.mode == "eof":
+        trailing_result = scan_trailing_data(local_path)
+        if not trailing_result["has_trailing_data"]:
+            return {
+                "success": False,
+                "detail": "No trailing data found to extract"
+            }
+        
+        try:
+            with open(local_path, 'rb') as f:
+                data = f.read()
+            eof_offset = -1
+            if data.startswith(b'\xff\xd8'):
+                eof_offset = find_jpeg_eof(data)
+            elif b'IEND\xae\x42\x60\x82' in data:
+                pos = data.find(b'IEND\xae\x42\x60\x82')
+                eof_offset = pos + 8
+                
+            if eof_offset != -1 and eof_offset < len(data):
+                trailing_bytes = data[eof_offset:]
+                try:
+                    text = trailing_bytes.decode('utf-8')
+                    is_text = all(32 <= ord(c) < 127 or c in '\r\n\t' for c in text[:150])
+                except Exception:
+                    text = trailing_bytes.decode('utf-8', errors='replace')
+                    is_text = False
+                
+                return {
+                    "success": True,
+                    "mode": "eof",
+                    "length": len(trailing_bytes),
+                    "is_text": is_text,
+                    "text": text,
+                    "payload_hex": trailing_bytes.hex()
+                }
+            return {
+                "success": False,
+                "detail": "Failed to parse EOF offset"
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to read trailing data: {str(e)}")
+            
+    elif request.mode == "lsb":
+        try:
+            decoded_bytes = decode_lsb(
+                image_path=local_path,
+                channels=request.channels or "RGB",
+                num_bits=request.num_bits or 1,
+                stop_marker=request.stop_marker
+            )
+            
+            try:
+                text = decoded_bytes.decode('utf-8')
+                is_text = all(32 <= ord(c) < 127 or c in '\r\n\t' for c in text[:150]) if text else True
+            except Exception:
+                text = decoded_bytes.decode('utf-8', errors='replace')
+                is_text = False
+                
+            return {
+                "success": True,
+                "mode": "lsb",
+                "length": len(decoded_bytes),
+                "is_text": is_text,
+                "text": text,
+                "payload_hex": decoded_bytes.hex()
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"LSB decode failed: {str(e)}")
+            
+    else:
+        raise HTTPException(status_code=400, detail="Invalid decryption mode. Supported modes: 'lsb', 'eof'")

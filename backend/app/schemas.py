@@ -29,3 +29,10 @@ class ImageMetadataResponse(ImageMetadataBase):
 
     class Config:
         from_attributes = True
+
+class StegoDecodeRequest(BaseModel):
+    mode: str  # "lsb" or "eof"
+    channels: Optional[str] = "RGB"
+    num_bits: Optional[int] = 1
+    stop_marker: Optional[str] = None
+

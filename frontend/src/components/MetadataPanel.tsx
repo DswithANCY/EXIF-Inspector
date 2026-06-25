@@ -1,17 +1,46 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Camera, Calendar, Image as ImageIcon, MapPin, 
-  Info, Maximize2, Compass, Cpu, X 
+  Info, Maximize2, Compass, Cpu, X, Shield, ShieldAlert, ShieldCheck, Unlock, Loader2 
 } from 'lucide-react';
-import { ImageMetadata } from '../types';
+import { ImageMetadata, StegoAnalysisResponse } from '../types';
 import { formatFileSize } from './ImageGrid';
 
 interface MetadataPanelProps {
   image: ImageMetadata | null;
   onClose: () => void;
+  onOpenStego: (analysis: StegoAnalysisResponse) => void;
 }
 
-export const MetadataPanel: React.FC<MetadataPanelProps> = ({ image, onClose }) => {
+export const MetadataPanel: React.FC<MetadataPanelProps> = ({ image, onClose, onOpenStego }) => {
+  const [analysis, setAnalysis] = useState<StegoAnalysisResponse | null>(null);
+  const [analyzing, setAnalyzing] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!image) {
+      setAnalysis(null);
+      return;
+    }
+    
+    setAnalysis(null);
+    setAnalyzing(true);
+    
+    fetch(`/api/images/${image.id}/stego/analyze`)
+      .then(res => {
+        if (!res.ok) throw new Error("Failed to analyze stego");
+        return res.json();
+      })
+      .then(data => {
+        setAnalysis(data);
+      })
+      .catch(err => {
+        console.error("Stego analysis error:", err);
+      })
+      .finally(() => {
+        setAnalyzing(false);
+      });
+  }, [image]);
+
   if (!image) {
     return (
       <div className="glass-panel meta-panel" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '320px', color: 'var(--text-muted)' }}>
@@ -94,6 +123,7 @@ export const MetadataPanel: React.FC<MetadataPanelProps> = ({ image, onClose }) 
 
   return (
     <div className="glass-panel meta-panel">
+      {/* Header */}
       <div className="panel-header">
         <div className="panel-title-group">
           <div className="panel-title" style={{ maxWidth: '280px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={image.filename}>
@@ -118,6 +148,47 @@ export const MetadataPanel: React.FC<MetadataPanelProps> = ({ image, onClose }) 
         </button>
       </div>
 
+      {/* Steganography Scanner Card */}
+      <div className="stego-scanner-card">
+        {analyzing ? (
+          <div className="stego-scanning-state">
+            <Loader2 size={16} className="animate-spin text-cyan-400" />
+            <span>Scanning for steganography...</span>
+          </div>
+        ) : analysis ? (
+          <div className={`stego-status-banner ${analysis.status}`}>
+            <div className="banner-icon">
+              {analysis.status === 'clean' && <ShieldCheck size={20} className="text-green" />}
+              {analysis.status === 'suspected' && <Shield size={20} className="text-orange" />}
+              {analysis.status === 'detected' && <ShieldAlert size={20} className="text-red" />}
+            </div>
+            <div className="banner-details">
+              <div className="banner-title">
+                Steganography: {analysis.status.toUpperCase()}
+              </div>
+              <div className="banner-desc">
+                {analysis.status === 'clean' && "No steganography signatures or anomalies detected."}
+                {analysis.status === 'suspected' && "Abnormally high LSB entropy. Encrypted payload suspected."}
+                {analysis.status === 'detected' && `Concatenated trailing data found after EOF (${analysis.trailing_data.length} bytes).`}
+              </div>
+            </div>
+            {(analysis.status === 'suspected' || analysis.status === 'detected') && (
+              <button 
+                className="btn btn-secondary btn-sm btn-decrypt-shortcut"
+                onClick={() => onOpenStego(analysis)}
+              >
+                <Unlock size={12} /> Decrypt
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="stego-scanning-state">
+            <span>Unable to run steganography check.</span>
+          </div>
+        )}
+      </div>
+
+      {/* Grid */}
       <div className="meta-grid">
         {metadataItems.map((item, idx) => (
           <div className="meta-item" key={idx}>
